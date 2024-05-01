@@ -1,31 +1,63 @@
+use derive_builder::Builder;
 use fluent_uri::Uri;
-use std::{collections::HashMap, fmt, num::ParseFloatError, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 
+#[derive(Builder)]
 struct MediaPlaylist {
     target_duration: u32,
     version: u32,
     part_target: u32,
     msn: u32,
     media_segments: Vec<MediaSegment>,
+    skip: Option<Skip>,
+    preload_hint: PreloadHint,
 }
 
+#[derive(Builder)]
 struct ServerControl {
     can_block_reload: bool,
     part_hold_back: u32,
     can_skip_until: f32,
 }
 
+#[derive(Clone, Builder)]
 struct MediaSegment {
     duration: f32,
     uri: Uri<String>,
     partial_segments: Vec<PartialSegment>,
 }
 
+#[derive(Clone, Builder)]
 pub struct PartialSegment {
     pub part_duration: f32,
     pub uri: Uri<String>,
     pub independent: Option<bool>,
     // TODO: BYTERANGE and GAP
+}
+
+#[derive(Clone, Builder)]
+pub struct Skip {
+    pub skipped_segments: u32,
+    pub recently_removed_dateranges: Vec<String>,
+}
+
+#[derive(Clone, Builder)]
+pub struct PreloadHint {
+    pub r#type: PreloadHintType,
+    pub uri: Uri<String>,
+    pub byterange_start: Option<u32>,
+    pub byterange_length: Option<u32>,
+}
+
+#[derive(Clone)]
+pub enum PreloadHintType {
+    Part,
+    Map,
+}
+
+pub enum SkipAttribute {
+    SkippedSegments,
+    RecentlyRemovedDateRanges,
 }
 
 impl fmt::Display for PartialSegment {
@@ -63,7 +95,7 @@ impl FromStr for PartialSegment {
         let res: HashMap<String, String> = attrs
             .split(",")
             .filter_map(|x| {
-                x.split_once("=")
+                x.split_once('=')
                     .map(|(k, v)| (k.to_string(), v.to_string()))
             })
             .collect();

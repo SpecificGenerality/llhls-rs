@@ -1,11 +1,16 @@
 use fluent_uri::Uri;
-use llhls_rs::PartialSegment;
+use llhls_rs::{read_playlist, PartialSegment};
 use std::fs;
 
 #[test]
 fn parse_ll_hls_basic() {
-    let playlist = fs::read_to_string("tests/resources/ll-hls.m3u8").unwrap();
-    println!("playlist: {}", playlist);
+    read_playlist(fs::File::open("tests/resources/ll-hls.m3u8").unwrap()).unwrap();
+    ()
+}
+
+#[test]
+fn parse_uri() {
+    Uri::parse_from("fileSequence270.mp4".to_string()).unwrap();
     ()
 }
 
@@ -13,7 +18,7 @@ fn parse_ll_hls_basic() {
 fn fmt_partial_segment() {
     let part = PartialSegment {
         part_duration: 0.33,
-        uri: Uri::parse_from("part.mp4".to_owned()).unwrap(),
+        uri: "\"part.mp4\"".to_string(),
         independent: Option::None,
     };
     println!("part: {}", part);

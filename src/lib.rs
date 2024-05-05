@@ -1,7 +1,7 @@
+use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use fluent_uri::Uri;
 use std::{
-    borrow::Borrow,
     collections::HashMap,
     fmt,
     fs::File,
@@ -17,8 +17,7 @@ pub struct MediaPlaylist {
     media_sequence_number: u32,
     media_segments: Vec<MediaSegment>,
     skip: Option<Skip>,
-    preload_hint: PreloadHint,
-    #[builder(default)]
+    preload_hint: Option<PreloadHint>,
     rendition_reports: Vec<RenditionReport>,
     server_control: ServerControl,
 }
@@ -72,11 +71,12 @@ impl FromStr for ServerControl {
     }
 }
 
-#[derive(Clone, Builder)]
+#[derive(Clone, Builder, Default)]
 struct MediaSegment {
     duration: f32,
     uri: Uri<String>,
     partial_segments: Vec<PartialSegment>,
+    program_date_time: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Clone, Builder)]
@@ -94,6 +94,9 @@ impl FromStr for PartialSegment {
         let mut builder = PartialSegmentBuilder::default();
         read_attributes::<PartialSegmentAttribute, PartialSegmentBuilder>(s, &mut builder)
             .map_err(|_| ParseTagError)?;
+        if builder.independent.is_none() {
+            builder.independent(None);
+        }
         builder.build().map_err(|_| ParseTagError)
     }
 }
@@ -245,6 +248,7 @@ pub enum MediaSegmentTag {
     Part,
     // Not strictly a tag, just makes things work nicer internally
     Uri,
+    ProgramDateTime,
 }
 
 impl FromStr for MediaSegmentTag {
@@ -254,6 +258,7 @@ impl FromStr for MediaSegmentTag {
         match s {
             "EXTINF" => Ok(MediaSegmentTag::Inf),
             "EXT-X-PART" => Ok(MediaSegmentTag::Part),
+            "EXT-X-PROGRAM-DATE-TIME" => Ok(MediaSegmentTag::ProgramDateTime),
             // lol
             _ => Ok(MediaSegmentTag::Uri),
         }
@@ -296,24 +301,35 @@ impl Tag<WrappedMediaSegmentBuilder> for MediaSegmentTag {
         attributes: &str,
     ) -> Result<(), ParseTagError> {
         match self {
-            MediaSegmentTag::Inf => builder
-                .segment
-                // TODO: Clean up
-                .duration(
-                    f32::from_str(attributes.split_once(',').ok_or(ParseTagError)?.0)
-                        .map_err(|_| ParseTagError)?,
-                ),
+            MediaSegmentTag::Inf => {
+                builder
+                    .segment
+                    // TODO: Clean up
+                    .duration(
+                        f32::from_str(attributes.split_once(',').ok_or(ParseTagError)?.0)
+                            .map_err(|_| ParseTagError)?,
+                    );
+                Ok(())
+            }
             MediaSegmentTag::Part => {
                 builder
                     .parts
                     .push(PartialSegment::from_str(attributes).map_err(|_| ParseTagError)?);
-                &mut builder.segment
+                Ok(())
             }
-            MediaSegmentTag::Uri => builder
-                .segment
-                .uri(Uri::parse_from(attributes.to_string()).map_err(|_| ParseTagError)?),
-        };
-        Ok(())
+            MediaSegmentTag::Uri => {
+                builder
+                    .segment
+                    .uri(Uri::parse_from(attributes.to_string()).map_err(|_| ParseTagError)?);
+                Ok(())
+            }
+            MediaSegmentTag::ProgramDateTime => {
+                builder.segment.program_date_time(Some(
+                    DateTime::from_str(attributes).map_err(|_| ParseTagError)?,
+                ));
+                Ok(())
+            }
+        }
     }
 }
 
@@ -463,6 +479,12 @@ impl FromStr for PreloadHint {
         let mut builder = PreloadHintBuilder::default();
         read_attributes::<PreloadHintAttribute, PreloadHintBuilder>(s, &mut builder)
             .map_err(|_| ParseTagError)?;
+        if builder.byterange_start.is_none() {
+            builder.byterange_start(None);
+        }
+        if builder.byterange_length.is_none() {
+            builder.byterange_length(None);
+        }
         builder.build().map_err(|_| ParseTagError)
     }
 }
@@ -505,9 +527,9 @@ impl Tag<WrappedMediaPlaylistBuilder> for MediaPlaylistTag {
                 Ok(())
             }
             MediaPlaylistTag::PreloadHint => {
-                builder
-                    .playlist
-                    .preload_hint(PreloadHint::from_str(attributes).map_err(|_| ParseTagError)?);
+                builder.playlist.preload_hint(Some(
+                    PreloadHint::from_str(attributes).map_err(|_| ParseTagError)?,
+                ));
                 Ok(())
             }
             MediaPlaylistTag::RenditionReport => {
@@ -686,13 +708,16 @@ pub fn read_playlist(file: File) -> Result<MediaPlaylist, ParsePlaylistError> {
         rendition_reports: Vec::new(),
         media_segments: Vec::new(),
     };
+    // Set some defaults so we don't forget later
+    builder.playlist.skip(None);
+    builder.playlist.preload_hint(None);
     let mut media_segment_builder = WrappedMediaSegmentBuilder {
         segment: MediaSegmentBuilder::default(),
         parts: Vec::new(),
     };
     line.clear();
     while let Ok(read_bytes) = parser.read_line(&mut line) {
-        let is_uri = !line.starts_with('#');
+        let is_uri = !line.starts_with('#') && !line.trim().is_empty();
         if line.starts_with("#EXT-X") || line.starts_with("#EXT") {
             let tag = line
                 .trim_end()
@@ -717,6 +742,9 @@ pub fn read_playlist(file: File) -> Result<MediaPlaylist, ParsePlaylistError> {
             }
         }
         if is_uri || line.eq("EXT-X-ENDLIST") {
+            if media_segment_builder.segment.program_date_time.is_none() {
+                media_segment_builder.segment.program_date_time(None);
+            }
             builder.media_segments.push(
                 media_segment_builder
                     .segment
@@ -730,10 +758,7 @@ pub fn read_playlist(file: File) -> Result<MediaPlaylist, ParsePlaylistError> {
             };
         }
         if read_bytes == 0 {
-            return builder
-                .playlist
-                .build()
-                .map_err(|_| ParsePlaylistError::BUILDER_ERROR);
+            break;
         }
         line.clear();
     }
